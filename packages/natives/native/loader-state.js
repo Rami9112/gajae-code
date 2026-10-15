@@ -32,13 +32,14 @@ import { embeddedAddon } from "./embedded-addon.js";
  * post-build `--reset` stub) is the authoritative compiled-mode signal.
  */
 
-const SUPPORTED_PLATFORMS = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64"];
+const SUPPORTED_PLATFORMS = ["linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64", "win32-x64", "win32-arm64"];
 const OPTIONAL_PACKAGE_BY_PLATFORM_TAG = {
 	"darwin-arm64": "@gajae-code/natives-darwin-arm64",
 	"darwin-x64": "@gajae-code/natives-darwin-x64",
 	"linux-arm64": "@gajae-code/natives-linux-arm64",
 	"linux-x64": "@gajae-code/natives-linux-x64",
 	"win32-x64": "@gajae-code/natives-win32-x64",
+	"win32-arm64": "@gajae-code/natives-win32-arm64",
 };
 const WINDOWS_GENERIC_READ = 0x80000000;
 const WINDOWS_FILE_SHARE_READ = 0x00000001;
@@ -138,6 +139,23 @@ function validateStagedCandidate(ctx, candidate) {
 	}
 }
 
+function preloadSiblingNativeRuntime(candidate) {
+	if (process.platform !== "win32") return;
+	const runtimes = [
+		path.join(path.dirname(candidate), "libunwind.dll"),
+		path.join(path.dirname(process.execPath), "libunwind.dll"),
+	];
+	for (const runtime of runtimes) {
+		if (!fs.existsSync(runtime)) continue;
+		const widePath = new Uint16Array(runtime.length + 1);
+		for (let index = 0; index < runtime.length; index++) widePath[index] = runtime.charCodeAt(index);
+		// The ARM64 gnullvm addon imports libunwind.dll. Windows does not search
+		// the addon's directory for that dependency, so map it by full path first.
+		const handle = windowsKernel32Bindings().symbols.LoadLibraryW(ptr(widePath));
+		if (handle !== 0 && handle !== 0n && handle != null) return;
+	}
+}
+
 function windowsKernel32Bindings() {
 	if (windowsKernel32) return windowsKernel32;
 	windowsKernel32 = dlopen("kernel32.dll", {
@@ -147,6 +165,7 @@ function windowsKernel32Bindings() {
 		},
 		CloseHandle: { args: ["i64"], returns: "u32" },
 		GetLastError: { args: [], returns: "u32" },
+		LoadLibraryW: { args: ["ptr"], returns: "ptr" },
 	});
 	return windowsKernel32;
 }
@@ -910,6 +929,7 @@ export function loadNative(options = {}) {
 			}
 			try {
 				validateStagedCandidate(ctx, candidate);
+				preloadSiblingNativeRuntime(candidate);
 				const bindings = options.requireCandidate ? options.requireCandidate(candidate) : require_(candidate);
 				if (typeof bindings.__gjcInstallTokioRuntime === "function") {
 					bindings.__gjcInstallTokioRuntime();
